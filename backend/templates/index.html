@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EdgeBoard AI</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>EdgeBoard AI</h1>
+    <p>Edge capture → image processing → OCR → AI notes</p>
+  </div>
+  <span id="health" class="pill">Checking…</span>
+</header>
+
+<main>
+  <section class="hero card">
+    <div class="hero-image">
+      <img id="latestImage" src="" alt="Latest board capture">
+      <div id="missingImage" class="missing-image" hidden>Capture unavailable</div>
+    </div>
+    <div class="hero-info">
+      <h2 id="latestTitle">Waiting for a frame</h2>
+      <div class="metrics">
+        <div><small>Change</small><strong id="change">—</strong></div>
+        <div><small>Visibility</small><strong id="visibility">—</strong></div>
+        <div><small>Brightness</small><strong id="brightness">—</strong></div>
+        <div><small>Status</small><strong id="status">—</strong></div>
+      </div>
+      <div class="metrics secondary">
+        <div><small>Sharpness</small><strong id="sharpness">—</strong></div>
+        <div><small>Stability</small><strong id="stability">—</strong></div>
+        <div><small>OCR Status</small><strong id="ocrStatus">—</strong></div>
+        <div><small>Confidence</small><strong id="confidence">—</strong></div>
+      </div>
+      <h3>AI Summary</h3>
+      <p id="summary">No processed frame yet.</p>
+      <h3>Extracted Notes</h3>
+      <pre id="notes">—</pre>
+      <h3>Processing Error</h3>
+      <pre id="errorBox">—</pre>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-head">
+      <h2>Captured Frames</h2>
+      <div class="controls">
+        <button onclick="refresh()">Refresh</button>
+        <button onclick="reprocessAll()">Reprocess All</button>
+      </div>
+    </div>
+    <div id="gallery" class="gallery"></div>
+  </section>
+</main>
+
+<script>
+let frames = [];
+function esc(s) { return String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function setImageSource(filename) {
+  const img = document.getElementById('latestImage');
+  const missing = document.getElementById('missingImage');
+  if (!filename) {
+    img.hidden = true; missing.hidden = false; img.src = '';
+    return;
+  }
+  img.hidden = false; missing.hidden = true;
+  img.src = `/captures/${encodeURIComponent(filename)}`;
+}
+function renderLatest(f) {
+  if (!f) {
+    setImageSource(null);
+    document.getElementById('latestTitle').textContent = 'Waiting for a frame';
+    document.getElementById('summary').textContent = 'No processed frame yet.';
+    document.getElementById('notes').textContent = '—';
+    document.getElementById('errorBox').textContent = '—';
+    return;
+  }
+  setImageSource(f.image_available ? f.filename : null);
+  document.getElementById('latestTitle').textContent = `Frame #${f.id} · ${f.filename}`;
+  document.getElementById('change').textContent = f.change_score ?? '—';
+  document.getElementById('visibility').textContent = f.board_visibility ?? '—';
+  document.getElementById('brightness').textContent = f.brightness ?? '—';
+  document.getElementById('sharpness').textContent = f.sharpness ?? '—';
+  document.getElementById('stability').textContent = f.stability_score ?? '—';
+  document.getElementById('ocrStatus').textContent = f.ocr_status || 'pending';
+  document.getElementById('confidence').textContent = f.ocr_confidence ?? '—';
+  document.getElementById('status').textContent = f.processing_status || 'pending';
+  const errorText = f.processing_error || f.last_error || f.ocr_error || '—';
+  const summaryText = f.summary || (errorText && errorText !== '—' ? errorText : 'No summary available.');
+  const notesText = f.notes || f.ocr_text || errorText || 'No OCR text detected.';
+  document.getElementById('summary').textContent = summaryText;
+  document.getElementById('notes').textContent = notesText;
+  document.getElementById('errorBox').textContent = errorText;
+}
+function renderGallery() {
+  const g = document.getElementById('gallery');
+  g.innerHTML = frames.map(f => `
+    <article class="frame" onclick="selectFrame(${f.id})">
+      <img src="${f.image_available ? `/captures/${encodeURIComponent(f.filename)}` : ''}" loading="lazy" alt="${esc(f.filename)}">
+      <div><b>#${f.id}</b> ${esc(f.processing_status || 'pending')}</div>
+      <div class="tiny">${esc(f.ocr_status || 'pending')}</div>
+      <small>${esc(f.filename || 'Unavailable')}</small>
+    </article>`).join('') || '<p>No frames received yet.</p>';
+}
+async function selectFrame(id) {
+  const r = await fetch(`/api/frames/${id}`); renderLatest(await r.json());
+}
+async function refresh() {
+  try {
+    const h = await fetch('/health');
+    const status = await h.json();
+    document.getElementById('health').textContent = status.ok ? 'Server online' : 'Server error';
+    const r = await fetch('/api/frames?limit=30');
+    frames = await r.json(); renderGallery(); renderLatest(frames[0]);
+  } catch(e) {
+    document.getElementById('health').textContent = 'Offline';
+  }
+}
+async function reprocessAll() {
+  document.getElementById('status').textContent = 'processing…';
+  await fetch('/api/reprocess-all', {method:'POST'});
+  await refresh();
+}
+refresh(); setInterval(refresh, 1000);
+</script>
+</body>
+</html>
