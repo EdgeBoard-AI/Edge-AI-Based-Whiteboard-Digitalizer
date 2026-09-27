@@ -29,7 +29,7 @@ const char* WIFI_SSID = "Brahmastra";
 const char* WIFI_PASSWORD = "brahmastra";
 
 const char* LAPTOP_SERVER =
-    "http://192.168.137.1:5000/upload";
+    "http://192.168.137.218:5000/upload";
 
 WebServer server(80);
 
@@ -66,11 +66,11 @@ WebServer server(80);
 // How frequently a frame is analyzed
 const unsigned long CHECK_INTERVAL = 1000;
 
-// How long the board must remain stable before capture
-const unsigned long REQUIRED_STABLE_TIME = 1500;
+// Condition 1: How long the board must remain stable (teacher not writing) before capture
+const unsigned long REQUIRED_STABLE_TIME = 3500;
 
-// Minimum time between successful captures
-const unsigned long CAPTURE_COOLDOWN = 1500;
+// Minimum time between successful captures (cooldown to avoid duplicates)
+const unsigned long CAPTURE_COOLDOWN = 8000;
 
 // Wi-Fi reconnect interval
 const unsigned long WIFI_RETRY_INTERVAL = 10000;
@@ -84,39 +84,35 @@ const unsigned long WIFI_RETRY_INTERVAL = 10000;
 #define ANALYSIS_PIXELS (ANALYSIS_WIDTH * ANALYSIS_HEIGHT)
 
 // =============================================================
-// SMART CAPTURE THRESHOLDS
+// SMART CAPTURE THRESHOLDS (3 CORE CONDITIONS)
 // =============================================================
 
-// Consecutive-frame stability.
-//
-// Lower value = more tolerant of small camera noise.
-const float STABILITY_THRESHOLD = 0.045f;
+// Condition 1: Consecutive-frame stability (detects teacher writing/hand movement)
+// Lower score = still board; higher score = active motion/writing
+const float STABILITY_THRESHOLD = 0.035f;
 
-// Average difference between current stable image
-// and LAST SUCCESSFULLY CAPTURED image.
-//
-// Previous value was 0.065 which was too aggressive.
-const float CHANGE_THRESHOLD = 0.020f;
+// Condition 2: Board visibility (detects hand, arm, or object in front of whiteboard)
+// Clear whiteboard is ~0.78-0.85; an obstructing body/hand drops it below 0.73
+const float MIN_BOARD_VISIBILITY = 0.73f;
 
-// Minimum percentage of pixels that must have changed
-// significantly.
-const float MIN_CHANGED_PIXEL_RATIO = 0.012f;
+// Condition 3: Significant change thresholds (prevents sending on few or small changes)
+// Major overall difference (e.g. board wipe or major redraw)
+const float CHANGE_THRESHOLD = 0.055f;
 
-// Difference threshold for a pixel to be considered changed.
-const int PIXEL_CHANGE_THRESHOLD = 18;
+// Minimum percentage of board pixels that must have changed significantly (4.0%)
+const float MIN_CHANGED_PIXEL_RATIO = 0.040f;
 
-// Detect changes in dark/marker pixels.
-const float DARK_CHANGE_RATIO = 0.008f;
+// Difference threshold for a single pixel to be considered changed
+const int PIXEL_CHANGE_THRESHOLD = 20;
 
-// Board visibility.
-const float MIN_BOARD_VISIBILITY = 0.50f;
+// Significant change in dark marker writing (2.5% of board area)
+const float DARK_CHANGE_RATIO = 0.025f;
 
-// Brightness limits.
+// Brightness limits
 const float MIN_BRIGHTNESS = 35.0f;
 const float MAX_BRIGHTNESS = 245.0f;
 
-// Sharpness threshold.
-// Reduced from 3.0 because small handwriting can still be valid.
+// Sharpness threshold
 const float MIN_SHARPNESS = 1.5f;
 
 // =============================================================
@@ -740,7 +736,7 @@ bool boardClear() {
       MIN_BOARD_VISIBILITY) {
 
     lastDecision =
-        "BOARD_NOT_VISIBLE";
+        "OBSTRUCTION_DETECTED";
 
     return false;
   }
@@ -909,8 +905,9 @@ bool uploadToLaptop(
           fb->len);
 
   Serial.printf(
-      "Laptop response: %d\n",
-      code);
+      "Laptop response: %d (%s)\n",
+      code,
+      http.errorToString(code).c_str());
 
   http.end();
 
@@ -920,50 +917,30 @@ bool uploadToLaptop(
 }
 
 // =============================================================
-// MEANINGFUL CHANGE DETECTION
+// =============================================================
+// MEANINGFUL CHANGE DETECTION (Condition 3)
 // =============================================================
 
 bool meaningfulChange() {
 
-  // -----------------------------------------------------------
-  // Method 1:
-  // Overall average difference
-  // -----------------------------------------------------------
-
-  bool averageChanged =
-      currentChangeScore >=
-      CHANGE_THRESHOLD;
-
-  // -----------------------------------------------------------
-  // Method 2:
-  // Changed pixel percentage
-  // -----------------------------------------------------------
-
-  bool pixelChanged =
-      currentChangedPixelRatio >=
-      MIN_CHANGED_PIXEL_RATIO;
-
-  // -----------------------------------------------------------
-  // Method 3:
-  // Dark writing changed
-  // -----------------------------------------------------------
-
-  bool darkChanged =
-      currentDarkChangeRatio >=
-      DARK_CHANGE_RATIO;
-
-  // -----------------------------------------------------------
-  // Combine detection methods
-  // -----------------------------------------------------------
-
-  if (averageChanged ||
-      pixelChanged ||
-      darkChanged) {
-
-    return true;
+  // Hard minimum gate: If overall change is less than 4%, it is just camera noise / minor lighting shift.
+  // NEVER send an image if change is tiny.
+  if (currentChangeScore < 0.040f) {
+    return false;
   }
 
-  return false;
+  // Method 1: Substantial new/erased marker writing.
+  // Both substantial pixel difference AND dark marker change must occur together.
+  // This rejects tiny smudges, 1-character marks, and minor lighting noise.
+  bool significantWriting =
+      (currentChangedPixelRatio >= MIN_CHANGED_PIXEL_RATIO) &&
+      (currentDarkChangeRatio >= DARK_CHANGE_RATIO);
+
+  // Method 2: Major board wipe or complete redraw
+  bool majorChange =
+      (currentChangeScore >= CHANGE_THRESHOLD);
+
+  return (significantWriting || majorChange);
 }
 
 // =============================================================
@@ -1221,13 +1198,13 @@ void processFrame() {
   previousValid = true;
 
   // -----------------------------------------------------------
-  // Not stable yet
+  // Condition 1: Check stability (Teacher not writing)
   // -----------------------------------------------------------
 
   if (!boardStable) {
 
     lastDecision =
-        "WAITING_STABLE";
+        "WAITING_STABLE (Teacher writing)";
 
     printAnalysis();
 
@@ -1237,13 +1214,16 @@ void processFrame() {
   }
 
   // -----------------------------------------------------------
-  // Board visibility
+  // Condition 2: Check board clear (No hand or object in front)
   // -----------------------------------------------------------
 
   if (!boardClear()) {
 
     rejectedFrames++;
 
+    lastDecision =
+        "OBSTRUCTION_DETECTED";
+
     printAnalysis();
 
     esp_camera_fb_return(fb);
@@ -1252,13 +1232,13 @@ void processFrame() {
   }
 
   // -----------------------------------------------------------
-  // Check meaningful change
+  // Condition 3: Check significant change (Ignore tiny changes)
   // -----------------------------------------------------------
 
   if (!meaningfulChange()) {
 
     lastDecision =
-        "NO_MEANINGFUL_CHANGE";
+        "INSIGNIFICANT_CHANGE";
 
     printAnalysis();
 
@@ -1343,8 +1323,10 @@ void processFrame() {
 
     rejectedFrames++;
 
-    // DO NOT update referenceImage.
+    // Backoff cooldown to prevent rapid retry loops
+    lastCapture = millis();
 
+    // DO NOT update referenceImage.
     // This means the same change will be retried
     // on the next stable frame.
 

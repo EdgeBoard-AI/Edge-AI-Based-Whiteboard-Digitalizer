@@ -15,6 +15,14 @@ from config import CAPTURES_DIR, HOST, MAX_UPLOAD_MB, PORT, PROCESSED_DIR, RECEI
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
 db.init_db()
 executor = ThreadPoolExecutor(max_workers=2)
 

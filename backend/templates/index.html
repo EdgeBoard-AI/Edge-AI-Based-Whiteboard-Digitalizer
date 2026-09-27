@@ -57,6 +57,9 @@
 </main>
 
 <script>
+const API_BASE = (window.location.protocol === 'file:' || (window.location.port !== '5000' && !window.location.host.includes(':5000')))
+  ? 'http://127.0.0.1:5000'
+  : '';
 let frames = [];
 function esc(s) { return String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function setImageSource(filename) {
@@ -67,7 +70,7 @@ function setImageSource(filename) {
     return;
   }
   img.hidden = false; missing.hidden = true;
-  img.src = `/captures/${encodeURIComponent(filename)}`;
+  img.src = `${API_BASE}/captures/${encodeURIComponent(filename)}`;
 }
 function renderLatest(f) {
   if (!f) {
@@ -99,21 +102,21 @@ function renderGallery() {
   const g = document.getElementById('gallery');
   g.innerHTML = frames.map(f => `
     <article class="frame" onclick="selectFrame(${f.id})">
-      <img src="${f.image_available ? `/captures/${encodeURIComponent(f.filename)}` : ''}" loading="lazy" alt="${esc(f.filename)}">
+      <img src="${f.image_available ? `${API_BASE}/captures/${encodeURIComponent(f.filename)}` : ''}" loading="lazy" alt="${esc(f.filename)}">
       <div><b>#${f.id}</b> ${esc(f.processing_status || 'pending')}</div>
       <div class="tiny">${esc(f.ocr_status || 'pending')}</div>
       <small>${esc(f.filename || 'Unavailable')}</small>
     </article>`).join('') || '<p>No frames received yet.</p>';
 }
 async function selectFrame(id) {
-  const r = await fetch(`/api/frames/${id}`); renderLatest(await r.json());
+  const r = await fetch(`${API_BASE}/api/frames/${id}`); renderLatest(await r.json());
 }
 async function refresh() {
   try {
-    const h = await fetch('/health');
+    const h = await fetch(`${API_BASE}/health`);
     const status = await h.json();
     document.getElementById('health').textContent = status.ok ? 'Server online' : 'Server error';
-    const r = await fetch('/api/frames?limit=30');
+    const r = await fetch(`${API_BASE}/api/frames?limit=30`);
     frames = await r.json(); renderGallery(); renderLatest(frames[0]);
   } catch(e) {
     document.getElementById('health').textContent = 'Offline';
@@ -121,7 +124,7 @@ async function refresh() {
 }
 async function reprocessAll() {
   document.getElementById('status').textContent = 'processing…';
-  await fetch('/api/reprocess-all', {method:'POST'});
+  await fetch(`${API_BASE}/api/reprocess-all`, {method:'POST'});
   await refresh();
 }
 refresh(); setInterval(refresh, 1000);

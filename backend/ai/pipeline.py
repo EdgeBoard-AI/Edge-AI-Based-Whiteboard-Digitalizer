@@ -88,36 +88,17 @@ def detect_board_quad(image: np.ndarray) -> np.ndarray | None:
     return candidates[0][1]
 
 
-def enhance_for_ocr(image: np.ndarray) -> dict[str, np.ndarray]:
+def enhance_for_ocr(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
-    gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-    gray = cv2.fastNlMeansDenoising(gray, None, 7, 7, 21)
+    # Upscale 2x for sharp character recognition
+    gray_2x = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
 
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    clahe_img = clahe.apply(gray)
+    # Mild Gaussian blur suppresses sensor noise and paper lines
+    blurred = cv2.GaussianBlur(gray_2x, (3, 3), 0)
 
-    sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-    sharpened = cv2.filter2D(gray, -1, sharpen_kernel)
-
-    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    adaptive = cv2.adaptiveThreshold(
-        clahe_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 31, 10
-    )
-
-    denoised = cv2.fastNlMeansDenoising(gray, None, 7, 7, 21)
-    sharpened_2 = cv2.filter2D(denoised, -1, sharpen_kernel)
-    _, combined = cv2.threshold(sharpened_2, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    return {
-        "gray": gray,
-        "variant_1_otsu": otsu,
-        "variant_2_adaptive": adaptive,
-        "variant_3_threshold": combined,
-        "adaptive": adaptive,
-        "clahe": clahe_img,
-        "sharpened": sharpened,
-    }
+    # Otsu automatic optimal thresholding separates black ink from whiteboard
+    _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return binary
 
 
 def preprocess(image_path: str | Path, stem: str) -> dict[str, Any]:
@@ -139,20 +120,15 @@ def preprocess(image_path: str | Path, stem: str) -> dict[str, Any]:
         board = roi
         used_perspective = False
 
-    variants = enhance_for_ocr(board)
-    paths: dict[str, Path] = {}
-    board_path = PROCESSED_DIR / f"{stem}_board.jpg"
-    cv2.imwrite(str(board_path), board)
-    for name, img in variants.items():
-        path = PROCESSED_DIR / f"{stem}_{name}.jpg"
-        cv2.imwrite(str(path), img)
-        paths[name] = path
+    # Generate ONLY a single high-contrast binary image to save disk space and processing time
+    binary = enhance_for_ocr(board)
+    binary_path = PROCESSED_DIR / f"{stem}_binary.jpg"
+    cv2.imwrite(str(binary_path), binary)
 
     return {
-        "board_path": board_path,
-        "variant_paths": paths,
-        "enhanced_path": paths["variant_2_adaptive"],
-        "binary_path": paths["variant_2_adaptive"],
+        "binary_path": binary_path,
+        "enhanced_path": binary_path,
+        "board_path": binary_path,
         "used_perspective": used_perspective,
         "original_width": int(image.shape[1]),
         "original_height": int(image.shape[0]),
@@ -200,42 +176,32 @@ def _looks_like_noise(text: str) -> bool:
 
 
 def _ocr_variant(image: np.ndarray, label: str, psm: int) -> dict[str, Any]:
+    config = f"--psm {psm} --oem 3"
+    raw_text = pytesseract.image_to_string(image, lang=OCR_LANG, config=config)
     data = pytesseract.image_to_data(
-        image, lang=OCR_LANG, config=f"--psm {psm}", output_type=pytesseract.Output.DICT
+        image, lang=OCR_LANG, config=config, output_type=pytesseract.Output.DICT
     )
-    words = []
     confidences = []
-    for index, word in enumerate(data.get("text", [])):
-        token = (word or "").strip()
-        if not token:
-            continue
-        conf_value = data.get("conf", [])[index] if index < len(data.get("conf", [])) else "-1"
+    for c in data.get("conf", []):
         try:
-            confidence = float(conf_value)
+            val = float(c)
+            if val >= 0:
+                confidences.append(val)
         except (TypeError, ValueError):
-            confidence = -1
-        if confidence < 0:
-            continue
-        token = token.strip(" ,;:.!?[]{}()\"'")
-        if not token or re.fullmatch(r"[\W_]+", token):
-            continue
-        if len(token) >= 5 and token == token[0] * len(token):
-            continue
-        words.append(token)
-        confidences.append(confidence)
-    cleaned = _clean_text(" ".join(words))
+            pass
     mean_conf = sum(confidences) / len(confidences) if confidences else 0.0
-    meaningful_chars = len(re.sub(r"[^A-Za-z0-9=<>/+-]", "", cleaned))
+    cleaned = _clean_text(raw_text)
+    meaningful_chars = len(re.sub(r"[^A-Za-z0-9]", "", cleaned))
     return {
         "variant": label,
         "text": cleaned,
         "confidence": round(mean_conf, 1),
-        "word_count": len(words),
+        "word_count": len(cleaned.split()),
         "meaningful_char_count": meaningful_chars,
     }
 
 
-def run_ocr(enhanced_path: Path, binary_path: Path, variant_paths: dict[str, Path] | None = None) -> dict[str, Any]:
+def run_ocr(binary_path: Path, *args, **kwargs) -> dict[str, Any]:
     if not TESSERACT_AVAILABLE or not TESSERACT_CMD or not os.path.exists(TESSERACT_CMD):
         message = "Tesseract executable was not found."
         return {
@@ -263,30 +229,29 @@ def run_ocr(enhanced_path: Path, binary_path: Path, variant_paths: dict[str, Pat
             "tesseract_version": "unavailable",
         }
 
+    image = cv2.imread(str(binary_path))
+    if image is None:
+        return {
+            "text": "",
+            "confidence": 0.0,
+            "status": "failed",
+            "error": f"Could not decode binary image at {binary_path}",
+            "variants": [],
+            "errors": ["Image decode failed"],
+            "tesseract_version": version,
+        }
+
     variants = []
     errors = []
-    files = [
-        ("variant_1", enhanced_path, 6),
-        ("variant_2", binary_path, 6),
-        ("variant_1_psm11", enhanced_path, 11),
-        ("variant_2_psm11", binary_path, 11),
+    # Test PSM 3 (auto page segmentation), PSM 6 (single block), and PSM 11 (sparse text)
+    configs = [
+        ("auto_psm3", 3),
+        ("block_psm6", 6),
+        ("sparse_psm11", 11),
     ]
-    if variant_paths:
-        for label, path in variant_paths.items():
-            files.append((f"{label}", path, 6))
-            files.append((f"{label}-psm11", path, 11))
 
-    seen = set()
-    for label, path, psm in files:
-        key = (label, psm)
-        if key in seen:
-            continue
-        seen.add(key)
+    for label, psm in configs:
         try:
-            image = cv2.imread(str(path))
-            if image is None:
-                errors.append(f"{label}: Could not decode image")
-                continue
             variant = _ocr_variant(image, label, psm)
             if variant["text"] and not _looks_like_noise(variant["text"]):
                 variants.append(variant)
@@ -304,11 +269,21 @@ def run_ocr(enhanced_path: Path, binary_path: Path, variant_paths: dict[str, Pat
             "tesseract_version": version,
         }
 
-    variants.sort(key=lambda item: (item.get("confidence", 0), item.get("word_count", 0), item.get("meaningful_char_count", 0)), reverse=True)
+    # Pick the variant with the most meaningful characters and best confidence
+    variants.sort(
+        key=lambda item: (
+            item.get("meaningful_char_count", 0) >= 3,
+            item.get("confidence", 0),
+            item.get("meaningful_char_count", 0),
+        ),
+        reverse=True,
+    )
     best = variants[0]
     best_text = best["text"]
     confidence = best["confidence"]
-    if confidence < 65 or best.get("meaningful_char_count", 0) < 1:
+
+    # Threshold for handwriting / whiteboard notes: confidence >= 30 is accepted as ok
+    if confidence < 30.0 or best.get("meaningful_char_count", 0) < 1:
         return {
             "text": best_text,
             "confidence": confidence,
@@ -392,7 +367,7 @@ def process_image(image_path: str | Path) -> dict[str, Any]:
     try:
         stem = image_path.stem
         prep = preprocess(image_path, stem)
-        ocr = run_ocr(prep["enhanced_path"], prep["binary_path"], prep.get("variant_paths"))
+        ocr = run_ocr(prep["binary_path"])
         structured = extract_structured_content(ocr["text"])
         summary, notes = generate_notes(ocr["text"], structured, ocr.get("status"))
         return {
