@@ -33,7 +33,20 @@ const char* LAPTOP_SERVER =
 
 WebServer server(80);
 
-#define STATUS_LED 48
+// =============================================================
+// NOTIFICATION & STATUS LED PINS
+// =============================================================
+// CRITICAL HARDWARE NOTE:
+// Pins 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18 are DEDICATED
+// to the OV3660 camera bus (GPIO 15 is XCLK clock; 4/5 are SCCB; 8-12,16-18 are data).
+// Do NOT connect an external LED to GPIO 15 or camera bus pins, as it will crash the camera.
+//
+// Safe, available general-purpose GPIO pins on the ESP32-S3:
+//   - GPIO 14 (Recommended for your external notification LED)
+//   - GPIO 3  (Also safe and available)
+//
+#define NOTIFICATION_LED_PIN 3   // Connected external notification LED to GPIO 3
+#define STATUS_LED           48  // On-board status LED (ESP32-S3 built-in)
 
 // =============================================================
 // OV3660 / ESP32-S3 N16R8 CAMERA PIN MAP
@@ -160,10 +173,16 @@ uint8_t* rgbBuffer = nullptr;
 
 void ledOn() {
   digitalWrite(STATUS_LED, HIGH);
+  if (NOTIFICATION_LED_PIN >= 0) {
+    digitalWrite(NOTIFICATION_LED_PIN, HIGH);
+  }
 }
 
 void ledOff() {
   digitalWrite(STATUS_LED, LOW);
+  if (NOTIFICATION_LED_PIN >= 0) {
+    digitalWrite(NOTIFICATION_LED_PIN, LOW);
+  }
 }
 
 void blinkLED(int times, int delayMs) {
@@ -1311,7 +1330,12 @@ void processFrame() {
         "CAPTURED";
 
     Serial.println(
-        ">>> IMAGE CAPTURED SUCCESSFULLY <<<");
+        ">>> IMAGE CAPTURED AND SENT TO BACKEND <<<");
+
+    // Notification: keep the LED ON for 2 seconds so the capture is clearly visible
+    ledOn();
+    delay(2000);
+    ledOff();
 
   }
 
@@ -1842,6 +1866,12 @@ void setup() {
   pinMode(
       STATUS_LED,
       OUTPUT);
+
+  if (NOTIFICATION_LED_PIN >= 0) {
+    pinMode(
+        NOTIFICATION_LED_PIN,
+        OUTPUT);
+  }
 
   ledOff();
 
