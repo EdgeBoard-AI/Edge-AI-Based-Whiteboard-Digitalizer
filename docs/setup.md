@@ -119,6 +119,9 @@ const char* LAPTOP_SERVER = "http://192.168.1.100:5000/upload";
 2. Select the corresponding COM port.
 3. Click **Upload**.
 4. Open the Serial Monitor at **115200 baud** to view real-time diagnostics and capture telemetry.
+5. After Wi-Fi connects, open the `Dashboard` URL printed in the Serial Monitor (for example, `http://192.168.1.42/`). The computer or phone must be on the same local network as the ESP32.
+
+If the URL is not printed, check the Serial Monitor for `WiFi not connected` or `WiFi connection failed`, then verify the SSID and password and that the network provides 2.4 GHz Wi-Fi. The firmware prints the URL when the ESP32 connects, including after a later reconnect.
 
 ---
 

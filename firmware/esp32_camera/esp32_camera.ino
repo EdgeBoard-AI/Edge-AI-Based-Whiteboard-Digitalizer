@@ -29,7 +29,7 @@ const char* WIFI_SSID = "Brahmastra";
 const char* WIFI_PASSWORD = "brahmastra";
 
 const char* LAPTOP_SERVER =
-    "http://192.168.137.218:5000/upload";
+    "http://192.168.137.204:5000/upload";
 
 WebServer server(80);
 
@@ -136,6 +136,7 @@ unsigned long lastCheck = 0;
 unsigned long stableStart = 0;
 unsigned long lastCapture = 0;
 unsigned long lastWiFiRetry = 0;
+bool wifiWasConnected = false;
 
 unsigned long capturedFrames = 0;
 unsigned long rejectedFrames = 0;
@@ -823,6 +824,21 @@ void connectWiFi(bool blocking) {
     Serial.println(
         "WiFi connection failed.");
   }
+}
+
+void printServerUrls() {
+  Serial.println("Web server is available:");
+
+  Serial.print("Dashboard: http://");
+  Serial.println(WiFi.localIP());
+
+  Serial.print("Status   : http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("/status");
+
+  Serial.print("Snapshot : http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("/snapshot");
 }
 
 // =============================================================
@@ -1964,29 +1980,11 @@ void setup() {
   if (WiFi.status() ==
       WL_CONNECTED) {
 
-    Serial.print(
-        "Dashboard: http://");
-
+    printServerUrls();
+    wifiWasConnected = true;
+  } else {
     Serial.println(
-        WiFi.localIP());
-
-    Serial.print(
-        "Snapshot : http://");
-
-    Serial.print(
-        WiFi.localIP());
-
-    Serial.println(
-        "/snapshot");
-
-    Serial.print(
-        "Capture  : http://");
-
-    Serial.print(
-        WiFi.localIP());
-
-    Serial.println(
-        "/capture");
+        "WiFi not connected; the server URL will be printed after connection.");
   }
 
   Serial.println(
@@ -2007,6 +2005,15 @@ void loop() {
 
   // Web server
   server.handleClient();
+
+  bool wifiConnected =
+      WiFi.status() == WL_CONNECTED;
+
+  if (wifiConnected && !wifiWasConnected) {
+    printServerUrls();
+  }
+
+  wifiWasConnected = wifiConnected;
 
   // Wi-Fi reconnect
   if (
