@@ -88,17 +88,24 @@ def detect_board_quad(image: np.ndarray) -> np.ndarray | None:
     return candidates[0][1]
 
 
-def enhance_for_ocr(image: np.ndarray) -> np.ndarray:
+def enhance_for_ocr(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
-    # Upscale 2x for sharp character recognition
     gray_2x = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-
-    # Mild Gaussian blur suppresses sensor noise and paper lines
     blurred = cv2.GaussianBlur(gray_2x, (3, 3), 0)
 
-    # Otsu automatic optimal thresholding separates black ink from whiteboard
-    _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return binary
+    block_size = min(51, min(blurred.shape[:2]))
+    if block_size % 2 == 0:
+        block_size -= 1
+    block_size = max(3, block_size)
+    adaptive = cv2.adaptiveThreshold(
+        blurred,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        block_size,
+        10,
+    )
+    return adaptive, gray_2x
 
 
 def preprocess(image_path: str | Path, stem: str) -> dict[str, Any]:
@@ -120,14 +127,16 @@ def preprocess(image_path: str | Path, stem: str) -> dict[str, Any]:
         board = roi
         used_perspective = False
 
-    # Generate ONLY a single high-contrast binary image to save disk space and processing time
-    binary = enhance_for_ocr(board)
-    binary_path = PROCESSED_DIR / f"{stem}_binary.jpg"
-    cv2.imwrite(str(binary_path), binary)
+    adaptive, grayscale = enhance_for_ocr(board)
+    binary_path = PROCESSED_DIR / f"{stem}_adaptive.png"
+    grayscale_path = PROCESSED_DIR / f"{stem}_gray.png"
+    cv2.imwrite(str(binary_path), adaptive)
+    cv2.imwrite(str(grayscale_path), grayscale)
 
     return {
         "binary_path": binary_path,
-        "enhanced_path": binary_path,
+        "grayscale_path": grayscale_path,
+        "enhanced_path": grayscale_path,
         "board_path": binary_path,
         "used_perspective": used_perspective,
         "original_width": int(image.shape[1]),
@@ -201,7 +210,7 @@ def _ocr_variant(image: np.ndarray, label: str, psm: int) -> dict[str, Any]:
     }
 
 
-def run_ocr(binary_path: Path, *args, **kwargs) -> dict[str, Any]:
+def run_ocr(binary_path: Path, grayscale_path: Path | None = None, *args, **kwargs) -> dict[str, Any]:
     if not TESSERACT_AVAILABLE or not TESSERACT_CMD or not os.path.exists(TESSERACT_CMD):
         message = "Tesseract executable was not found."
         return {
@@ -229,34 +238,44 @@ def run_ocr(binary_path: Path, *args, **kwargs) -> dict[str, Any]:
             "tesseract_version": "unavailable",
         }
 
-    image = cv2.imread(str(binary_path))
-    if image is None:
-        return {
-            "text": "",
-            "confidence": 0.0,
-            "status": "failed",
-            "error": f"Could not decode binary image at {binary_path}",
-            "variants": [],
-            "errors": ["Image decode failed"],
-            "tesseract_version": version,
-        }
-
     variants = []
     errors = []
-    # Test PSM 3 (auto page segmentation), PSM 6 (single block), and PSM 11 (sparse text)
     configs = [
         ("auto_psm3", 3),
         ("block_psm6", 6),
         ("sparse_psm11", 11),
     ]
 
-    for label, psm in configs:
-        try:
-            variant = _ocr_variant(image, label, psm)
-            if variant["text"] and not _looks_like_noise(variant["text"]):
-                variants.append(variant)
-        except Exception as exc:
-            errors.append(f"{label}: {exc}")
+    image_paths = [("adaptive", binary_path)]
+    if grayscale_path is not None:
+        image_paths.append(("grayscale", grayscale_path))
+
+    decoded_images = 0
+    for image_label, image_path in image_paths:
+        image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            errors.append(f"Could not decode {image_label} image at {image_path}")
+            continue
+
+        decoded_images += 1
+        for label, psm in configs:
+            try:
+                variant = _ocr_variant(image, f"{image_label}_{label}", psm)
+                if variant["text"] and not _looks_like_noise(variant["text"]):
+                    variants.append(variant)
+            except Exception as exc:
+                errors.append(f"{image_label}_{label}: {exc}")
+
+    if decoded_images == 0:
+        return {
+            "text": "",
+            "confidence": 0.0,
+            "status": "failed",
+            "error": "Could not decode any preprocessed OCR image.",
+            "variants": variants,
+            "errors": errors,
+            "tesseract_version": version,
+        }
 
     if not variants:
         return {
@@ -367,7 +386,7 @@ def process_image(image_path: str | Path) -> dict[str, Any]:
     try:
         stem = image_path.stem
         prep = preprocess(image_path, stem)
-        ocr = run_ocr(prep["binary_path"])
+        ocr = run_ocr(prep["binary_path"], prep["grayscale_path"])
         structured = extract_structured_content(ocr["text"])
         summary, notes = generate_notes(ocr["text"], structured, ocr.get("status"))
         return {
@@ -383,6 +402,7 @@ def process_image(image_path: str | Path) -> dict[str, Any]:
             "board_image": prep["board_path"].name,
             "enhanced_image": prep["enhanced_path"].name,
             "binary_image": prep["binary_path"].name,
+            "grayscale_image": prep["grayscale_path"].name,
             "used_perspective": prep["used_perspective"],
             "tesseract_version": ocr.get("tesseract_version", "unknown"),
         }
@@ -401,6 +421,7 @@ def process_image(image_path: str | Path) -> dict[str, Any]:
             "board_image": "",
             "enhanced_image": "",
             "binary_image": "",
+            "grayscale_image": "",
             "used_perspective": False,
             "tesseract_version": "unknown",
         }

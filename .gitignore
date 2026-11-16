@@ -56,6 +56,8 @@ $RECYCLE.BIN/
 received_frames/
 processed/
 captures/
+extracted_text/
+class_notes/
 output/
 logs/
 temp/

@@ -140,3 +140,5 @@ To automatically summarize board captures and format study notes:
    OLLAMA_MODEL=llama3.2:3b
    ```
 4. Restart the backend server.
+
+The dashboard's **Class Over — Generate PDF Notes** button uses `OLLAMA_URL` and `OLLAMA_MODEL` to create one study guide from the ordered frame notes and downloads it as a PDF. This explicit action attempts Ollama regardless of `ENABLE_OLLAMA`; Ollama must be running and the configured model must be available locally. Generated PDFs are saved in `backend/class_notes/`.

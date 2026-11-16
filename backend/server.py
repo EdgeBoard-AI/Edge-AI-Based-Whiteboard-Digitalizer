@@ -2,15 +2,35 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Lock
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 from PIL import Image
 
 import db
+from ai.class_notes import (
+    ClassNotesGenerationError,
+    generate_class_notes,
+    parse_frame_notes,
+)
 from ai.pipeline import process_image
-from config import CAPTURES_DIR, HOST, MAX_UPLOAD_MB, PORT, PROCESSED_DIR, RECEIVED_DIR
+from config import (
+    CAPTURES_DIR,
+    CLASS_NOTES_DIR,
+    EXTRACTED_TEXT_DIR,
+    HOST,
+    MAX_UPLOAD_MB,
+    OLLAMA_MODEL,
+    OLLAMA_URL,
+    PORT,
+    PROCESSED_DIR,
+    RECEIVED_DIR,
+)
+from pdf_export import PDFExportError, save_class_notes_pdf
+from text_export import write_all_frame_texts
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
@@ -24,7 +44,27 @@ def add_cors_headers(response):
     return response
 
 db.init_db()
+text_export_lock = Lock()
 executor = ThreadPoolExecutor(max_workers=2)
+
+
+def refresh_text_export():
+    with text_export_lock:
+        return write_all_frame_texts(db.list_frame_texts())
+
+
+refresh_text_export()
+
+
+def clear_persisted_data():
+    for directory in (RECEIVED_DIR, PROCESSED_DIR, CAPTURES_DIR, EXTRACTED_TEXT_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+        for path in directory.iterdir():
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+    db.clear_frames()
 
 
 def safe_filename(filename: str) -> str:
@@ -43,6 +83,7 @@ def process_frame_id(frame_id: int):
         raise FileNotFoundError(f"Missing capture file: {path.name}")
     result = process_image(path)
     db.update_processing(frame_id, result=result)
+    result["text_file"] = refresh_text_export().name
     return result
 
 
@@ -124,6 +165,47 @@ def processed_file(filename):
     if not safe_path.exists() or not safe_path.is_file() or safe_path.parent.resolve() != PROCESSED_DIR.resolve():
         return jsonify({"error": "Processed file not found"}), 404
     return send_from_directory(PROCESSED_DIR, safe_name)
+
+
+@app.post("/api/class-notes")
+def create_class_notes():
+    try:
+        export_path = refresh_text_export()
+        frame_notes = parse_frame_notes(export_path.read_text(encoding="utf-8"))
+        if not frame_notes:
+            return jsonify({
+                "success": False,
+                "error": "No extracted frame notes are available to summarize.",
+            }), 400
+
+        markdown = generate_class_notes(
+            frame_notes,
+            ollama_url=OLLAMA_URL,
+            model=OLLAMA_MODEL,
+        )
+        pdf_path = save_class_notes_pdf(markdown)
+    except ClassNotesGenerationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 503
+    except PDFExportError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+    except OSError as exc:
+        return jsonify({"success": False, "error": f"Could not read or save class notes: {exc}"}), 500
+
+    return jsonify({
+        "success": True,
+        "frame_count": len(frame_notes),
+        "filename": pdf_path.name,
+        "pdf_url": f"/class-notes/{pdf_path.name}",
+    })
+
+
+@app.get("/class-notes/<path:filename>")
+def class_notes_pdf(filename):
+    safe_name = safe_filename(filename)
+    safe_path = (CLASS_NOTES_DIR / safe_name).resolve()
+    if not safe_path.exists() or not safe_path.is_file() or safe_path.parent.resolve() != CLASS_NOTES_DIR.resolve():
+        return jsonify({"error": "Class notes PDF not found"}), 404
+    return send_from_directory(CLASS_NOTES_DIR, safe_name, as_attachment=True)
 
 
 def _background_process(frame_id: int):
@@ -218,6 +300,23 @@ def reprocess_all():
     return jsonify({"success": True, "completed": completed, "failed": failed})
 
 
+def run_server():
+    clear_on_exit = False
+    try:
+        app.run(host=HOST, port=PORT, debug=False, threaded=True)
+    except KeyboardInterrupt:
+        clear_on_exit = True
+    else:
+        clear_on_exit = True
+    finally:
+        try:
+            executor.shutdown(wait=True)
+        finally:
+            if clear_on_exit:
+                clear_persisted_data()
+                print("Server stopped; saved frame data and extracted text were cleared.")
+
+
 if __name__ == "__main__":
     print("=" * 56)
     print("EDGEBOARD AI — local laptop server")
@@ -225,4 +324,4 @@ if __name__ == "__main__":
     print(f"Network   : http://<LAPTOP-IP>:{PORT}")
     print("Upload    : POST /upload")
     print("=" * 56)
-    app.run(host=HOST, port=PORT, debug=False, threaded=True)
+    run_server()

@@ -63,7 +63,12 @@ def init_db():
         """)
         conn.commit()
     _ensure_columns()
-    purge_missing_frames()
+
+
+def clear_frames():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM frames")
+        conn.commit()
 
 
 def _row(row):
@@ -121,7 +126,28 @@ def list_frames(limit=50):
             FROM frames ORDER BY id DESC LIMIT ?
         """, (limit,)).fetchall()
     frames = [_row(row) for row in rows]
-    return [frame for frame in frames if frame and (RECEIVED_DIR / Path(frame["filename"]).name).exists()]
+    return [frame for frame in frames if frame]
+
+
+def list_frame_texts():
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("""
+            SELECT id, received_at, ocr_status, ocr_confidence, ocr_text, notes
+            FROM frames
+            WHERE COALESCE(ocr_status, 'pending') NOT IN ('pending', 'received')
+            ORDER BY id
+        """).fetchall()
+    return [
+        {
+            "id": row[0],
+            "received_at": row[1],
+            "ocr_status": row[2],
+            "ocr_confidence": row[3],
+            "ocr_text": row[4],
+            "notes": row[5],
+        }
+        for row in rows
+    ]
 
 
 def get_frame(frame_id):
@@ -134,10 +160,7 @@ def get_frame(frame_id):
                    processed_image_path, last_error
             FROM frames WHERE id = ?
         """, (frame_id,)).fetchone()
-    frame = _row(row)
-    if frame and not (RECEIVED_DIR / Path(frame["filename"]).name).exists():
-        return None
-    return frame
+    return _row(row)
 
 
 def set_processing(frame_id, status="processing"):

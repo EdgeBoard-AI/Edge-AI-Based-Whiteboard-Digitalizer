@@ -10,10 +10,10 @@ EdgeBoard AI is an end-to-end smart whiteboard and presentation capture system. 
 
 - **Smart Edge Filtering**: Frame stability analysis, quality checks (brightness, sharpness), and meaningful-change detection directly on the ESP32-S3 microcontroller.
 - **Efficient Network Usage**: Transmits only stable, high-quality, changed frames over local Wi-Fi.
-- **Automated Image Rectification**: 4-point perspective warp and OpenCV image enhancements (CLAHE, denoising, adaptive thresholding).
+- **Automated Image Rectification**: 4-point perspective warp, adaptive binarization, and grayscale OCR fallback.
 - **Local-First OCR**: Offline text extraction using Tesseract OCR with multi-variant confidence scoring.
 - **Optional Local LLM Summarization**: Automated study note generation and concept extraction via Ollama (e.g. `llama3.2:3b`) with zero cloud dependencies.
-- **Interactive Web Dashboard**: Real-time monitoring, live snapshots, capture history, and manual reprocessing controls.
+- **Interactive Web Dashboard**: Real-time monitoring, live snapshots, capture history, manual reprocessing, and one-click end-of-class PDF notes.
 - **RESTful Ingestion API**: Lightweight HTTP endpoints for device telemetry and image retrieval.
 
 ---
@@ -55,6 +55,7 @@ EdgeAI/
 │   ├── server.py             # Flask application & REST endpoints
 │   ├── db.py                 # SQLite database layer
 │   ├── config.py             # Application configuration & paths
+│   ├── extracted_text/       # Generated all_frames.txt OCR export
 │   ├── requirements.txt      # Python dependencies
 │   ├── test_pipeline.py      # Local verification suite
 │   ├── ai/
@@ -165,10 +166,14 @@ http://127.0.0.1:5000
 
 1. **ROI Cropping**: Extracts the whiteboard area based on configured bounding coordinates.
 2. **Perspective Transform**: Automatically locates board corners and performs a 4-point perspective warp.
-3. **Enhancement**: Applies noise reduction, CLAHE contrast equalization, sharpening, and multiple binarization variants (Otsu, Adaptive Gaussian).
-4. **Tesseract OCR**: Extracts text from each variant and selects the result with the highest confidence.
+3. **Enhancement**: Creates an adaptive-threshold image and an upscaled grayscale image to handle uneven board lighting.
+4. **Tesseract OCR**: Extracts text from both images and selects the result with the highest confidence.
 5. **Structuring**: Identifies formulas, equations, list items, and key headings.
 6. **LLM Synthesis (Optional)**: If Ollama is active, prompts a local model to structure clean lecture/study notes.
+
+All processed frame notes and OCR text are collected in `backend/extracted_text/all_frames.txt`. Each entry includes its frame number, capture time, OCR status, confidence, dashboard notes, and raw OCR text. The file is rebuilt at backend startup and after processing, so reprocessing a frame updates its entry rather than duplicating it.
+
+When the server is stopped gracefully (for example, with Ctrl+C), it waits for active image processing to finish, then deletes frame records and saved/processed images, and removes extracted-text exports. The SQLite database file remains in place. Force-terminating Python or losing power may prevent this cleanup from running.
 
 ---
 

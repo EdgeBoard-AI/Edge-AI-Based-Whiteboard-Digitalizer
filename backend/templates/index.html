@@ -50,8 +50,11 @@
       <div class="controls">
         <button onclick="refresh()">Refresh</button>
         <button onclick="reprocessAll()">Reprocess All</button>
+        <button id="classNotesButton" onclick="generateClassNotes()">Class Over — Generate PDF Notes</button>
       </div>
     </div>
+    <p id="classNotesStatus" class="class-notes-status" role="status" aria-live="polite"></p>
+    <a id="classNotesDownload" class="class-notes-download" hidden download>Download class notes PDF</a>
     <div id="gallery" class="gallery"></div>
   </section>
 </main>
@@ -126,6 +129,28 @@ async function reprocessAll() {
   document.getElementById('status').textContent = 'processing…';
   await fetch(`${API_BASE}/api/reprocess-all`, {method:'POST'});
   await refresh();
+}
+async function generateClassNotes() {
+  const button = document.getElementById('classNotesButton');
+  const status = document.getElementById('classNotesStatus');
+  const download = document.getElementById('classNotesDownload');
+  button.disabled = true;
+  download.hidden = true;
+  status.textContent = 'Collecting frame notes and generating the class PDF…';
+  try {
+    const response = await fetch(`${API_BASE}/api/class-notes`, {method:'POST'});
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+    download.href = `${API_BASE}${result.pdf_url}`;
+    download.textContent = `Download PDF (${result.frame_count} frames)`;
+    download.hidden = false;
+    download.click();
+    status.textContent = 'Class notes PDF generated; download started.';
+  } catch (error) {
+    status.textContent = `Could not generate class notes: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
 }
 refresh(); setInterval(refresh, 1000);
 </script>

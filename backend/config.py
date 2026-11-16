@@ -8,9 +8,11 @@ BASE_DIR = Path(__file__).resolve().parent
 RECEIVED_DIR = BASE_DIR / "received_frames"
 PROCESSED_DIR = BASE_DIR / "processed"
 CAPTURES_DIR = BASE_DIR / "captures"
+EXTRACTED_TEXT_DIR = BASE_DIR / "extracted_text"
+CLASS_NOTES_DIR = BASE_DIR / "class_notes"
 DB_PATH = BASE_DIR / "edgeboard.db"
 
-for directory in (RECEIVED_DIR, PROCESSED_DIR, CAPTURES_DIR):
+for directory in (RECEIVED_DIR, PROCESSED_DIR, CAPTURES_DIR, EXTRACTED_TEXT_DIR, CLASS_NOTES_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 HOST = os.getenv("EDGEBOARD_HOST", "0.0.0.0")
